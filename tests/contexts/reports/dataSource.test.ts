@@ -12,6 +12,8 @@ import {
   parseFreshness,
   validateDataSourceChange,
   validateFieldChange,
+  suggestFieldName,
+  validateFieldRenames,
 } from '@/contexts/reports/domain/DataSource.js';
 import { InvalidChartError } from '@/contexts/reports/domain/Report.js';
 
@@ -122,5 +124,88 @@ describe('data sources', () => {
     expect(fieldTypePath('Number')).toEqual(['Number']);
     expect(fieldTypePath('Currency > EUR')).toEqual(['Currency', 'EUR']);
     expect(fieldTypePath('Date & Time › Year Month')).toEqual(['Date & Time', 'Year Month']);
+  });
+});
+
+describe('field names and IDs', () => {
+  const existing = [
+    { name: 'Revenue', id: 'order_value_ex_vat_sek' },
+    { name: 'orders', id: 'orders' },
+    { name: 'Spend', id: 'ad_spend_sek' },
+  ];
+
+  it('trims and accepts a name, an ID or both', () => {
+    expect(
+      validateFieldRenames([{ field: ' orders ', name: ' Orders ', id: 'orders_count' }]),
+    ).toEqual([{ field: 'orders', name: 'Orders', id: 'orders_count' }]);
+  });
+
+  it('refuses empty batches, empty changes and malformed IDs', () => {
+    expect(() => validateFieldRenames([])).toThrow(/at least one/);
+    expect(() => validateFieldRenames([{ field: 'orders' }])).toThrow(/new name or id/);
+    expect(() => validateFieldRenames([{ field: ' ', name: 'x' }])).toThrow(/name the field/);
+    expect(() => validateFieldRenames([{ field: 'orders', name: '  ' }])).toThrow(
+      /cannot be empty/,
+    );
+    for (const id of ['1st', 'has space', 'dash-ed', 'ö'])
+      expect(() => validateFieldRenames([{ field: 'orders', id }])).toThrow(/not a valid field ID/);
+    expect(validateFieldRenames([{ field: 'orders', id: '_x1' }])[0]!.id).toBe('_x1');
+  });
+
+  it('refuses a field renamed twice or two fields given one name or ID', () => {
+    expect(() =>
+      validateFieldRenames([
+        { field: 'orders', name: 'A' },
+        { field: 'Orders', id: 'b' },
+      ]),
+    ).toThrow(/renamed twice/);
+    expect(() =>
+      validateFieldRenames([
+        { field: 'orders', name: 'Same' },
+        { field: 'Spend', name: 'same' },
+      ]),
+    ).toThrow(/both be named/);
+    expect(() =>
+      validateFieldRenames([
+        { field: 'orders', id: 'x' },
+        { field: 'Spend', id: 'X' },
+      ]),
+    ).toThrow(/both get the ID/);
+  });
+
+  it('finds fields by name or ID and refuses clashes with fields that keep theirs', () => {
+    expect(
+      validateFieldRenames([{ field: 'ad_spend_sek', name: 'Ad spend' }], existing),
+    ).toHaveLength(1);
+    expect(() => validateFieldRenames([{ field: 'missing', name: 'x' }], existing)).toThrow(
+      /no field/,
+    );
+    expect(() => validateFieldRenames([{ field: 'orders', name: 'revenue' }], existing)).toThrow(
+      /already the name of the field order_value_ex_vat_sek/,
+    );
+    expect(() => validateFieldRenames([{ field: 'orders', id: 'AD_SPEND_SEK' }], existing)).toThrow(
+      /already the ID of the field "Spend"/,
+    );
+    // Swapping names within one batch is fine: neither field keeps its old name.
+    expect(
+      validateFieldRenames(
+        [
+          { field: 'Revenue', name: 'Spend' },
+          { field: 'Spend', name: 'Revenue' },
+        ],
+        existing,
+      ),
+    ).toHaveLength(2);
+    // Re-casing a field's own name is not a clash.
+    expect(validateFieldRenames([{ field: 'orders', name: 'Orders' }], existing)).toHaveLength(1);
+  });
+
+  it('suggests readable names from column-style IDs', () => {
+    expect(suggestFieldName('order_value_ex_vat_sek')).toBe('Order value ex VAT SEK');
+    expect(suggestFieldName('ga4_sessions')).toBe('GA4 sessions');
+    expect(suggestFieldName('gross_margin_pct')).toBe('Gross margin %');
+    expect(suggestFieldName('roas')).toBe('ROAS');
+    expect(suggestFieldName('firstOrders')).toBe('First orders');
+    expect(suggestFieldName('date')).toBe('Date');
   });
 });

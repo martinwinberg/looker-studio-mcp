@@ -937,6 +937,37 @@ export const updateFieldSchema = z.object({
   name: z.string().min(1).optional().describe('New field name'),
 });
 
+export const listFieldIdsSchema = z.object({
+  report_id: reportId,
+  data_source: dataSourceRef.optional().describe('Needed when the report has several'),
+  suggest_names: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Also suggest a tidier display name for fields still named like their column, e.g. order_value_ex_vat_sek → "Order value ex VAT SEK"',
+    ),
+});
+
+export const renameFieldsSchema = z.object({
+  report_id: reportId,
+  data_source: dataSourceRef.optional().describe('Needed when the report has several'),
+  renames: z
+    .array(
+      z.object({
+        field: z.string().min(1).describe('Current display name or field ID'),
+        name: z.string().min(1).optional().describe('New display name'),
+        id: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('New field ID: letters, digits and _, not starting with a digit'),
+      }),
+    )
+    .min(1)
+    .max(200)
+    .describe('Fields to rename; each needs a new name, a new id or both'),
+});
+
 // ── Batch ──
 
 export const applyActionsSchema = z.object({

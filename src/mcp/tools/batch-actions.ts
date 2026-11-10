@@ -12,6 +12,7 @@ import { handleAddCommunityViz } from './add-community-viz.tool.js';
 import { handleListDataSources } from './list-data-sources.tool.js';
 import { handleRemoveDataSource } from './remove-data-source.tool.js';
 import { handleUpdateDataSource } from './update-data-source.tool.js';
+import { handleRenameFields } from './rename-fields.tool.js';
 import { handleUpdateField } from './update-field.tool.js';
 import { handleAddBinField } from './add-bin-field.tool.js';
 import { handleAddCalculatedField } from './add-calculated-field.tool.js';
@@ -88,6 +89,7 @@ export const BATCHABLE_TOOLS: Record<string, BatchableTool> = {
   remove_data_source: { schema: schemas.removeDataSourceSchema, run: handleRemoveDataSource },
   update_data_source: { schema: schemas.updateDataSourceSchema, run: handleUpdateDataSource },
   update_field: { schema: schemas.updateFieldSchema, run: handleUpdateField },
+  rename_fields: { schema: schemas.renameFieldsSchema, run: handleRenameFields },
 };
 
 export interface BatchAction {

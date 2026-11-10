@@ -241,3 +241,150 @@ export function fieldTypePath(type: string): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+// ── Field names and IDs (Resource › Manage field names and IDs) ──
+
+// A field as the Manage field names and IDs dialog lists it: the display name
+// charts show and the field ID formulas and the report refer to.
+export interface FieldIdentity {
+  name: string;
+  id: string;
+}
+
+// One change of a field, found by its current name or ID.
+export interface FieldRename {
+  field: string;
+  name?: string;
+  id?: string;
+}
+
+// Looker Studio field IDs: letters, digits and underscores, not starting with a digit.
+export const FIELD_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const fold = (s: string): string => s.trim().toLowerCase();
+
+// Checks a batch of renames before any browser work: every change names a field and
+// a new name or ID, IDs are well formed, and no two fields end up with the same name or ID.
+// With `existing` (the dialog's list) it also checks that each field exists and that the
+// new names and IDs do not collide with fields that keep theirs.
+export function validateFieldRenames(
+  renames: FieldRename[],
+  existing?: FieldIdentity[],
+): FieldRename[] {
+  if (renames.length === 0) throw new InvalidChartError('Pass at least one field to rename.');
+  const out = renames.map((r, i): FieldRename => {
+    const at = `Rename ${i + 1}`;
+    if (!r.field.trim()) throw new InvalidChartError(`${at}: name the field to change.`);
+    if (r.name === undefined && r.id === undefined)
+      throw new InvalidChartError(`${at} (${r.field.trim()}): pass a new name or id.`);
+    if (r.name !== undefined && !r.name.trim())
+      throw new InvalidChartError(`${at} (${r.field.trim()}): the new name cannot be empty.`);
+    if (r.id !== undefined && !FIELD_ID_PATTERN.test(r.id.trim()))
+      throw new InvalidChartError(
+        `${at} (${r.field.trim()}): "${r.id}" is not a valid field ID (letters, digits and _, not starting with a digit).`,
+      );
+    return {
+      field: r.field.trim(),
+      ...(r.name !== undefined ? { name: r.name.trim() } : {}),
+      ...(r.id !== undefined ? { id: r.id.trim() } : {}),
+    };
+  });
+
+  const seen = new Set<string>();
+  for (const r of out) {
+    if (seen.has(fold(r.field)))
+      throw new InvalidChartError(`The field "${r.field}" is renamed twice; merge the changes.`);
+    seen.add(fold(r.field));
+  }
+  const dupe = (values: string[]): string | undefined => {
+    const s = new Set<string>();
+    for (const v of values) {
+      if (s.has(fold(v))) return v;
+      s.add(fold(v));
+    }
+    return undefined;
+  };
+  const newNames = out.flatMap((r) => (r.name ? [r.name] : []));
+  const newIds = out.flatMap((r) => (r.id ? [r.id] : []));
+  const sameName = dupe(newNames);
+  if (sameName) throw new InvalidChartError(`Two fields would both be named "${sameName}".`);
+  const sameId = dupe(newIds);
+  if (sameId) throw new InvalidChartError(`Two fields would both get the ID "${sameId}".`);
+
+  if (existing) {
+    const targets = out.map((r) => {
+      const hit =
+        existing.find((f) => f.name === r.field) ??
+        existing.find((f) => f.id === r.field) ??
+        existing.find((f) => fold(f.name) === fold(r.field) || fold(f.id) === fold(r.field));
+      if (!hit)
+        throw new InvalidChartError(
+          `There is no field "${r.field}" (by name or ID) in the data source.`,
+        );
+      return hit;
+    });
+    // Names and IDs after the renames, for the fields that are not changed.
+    const kept = existing.filter((f) => !targets.includes(f));
+    out.forEach((r, i) => {
+      const self = targets[i]!;
+      if (r.name && fold(r.name) !== fold(self.name)) {
+        const other = kept.find((f) => fold(f.name) === fold(r.name!));
+        if (other)
+          throw new InvalidChartError(
+            `"${r.name}" is already the name of the field ${other.id}; rename that one too or pick another name.`,
+          );
+      }
+      if (r.id && fold(r.id) !== fold(self.id)) {
+        const other = kept.find((f) => fold(f.id) === fold(r.id!));
+        if (other)
+          throw new InvalidChartError(
+            `"${r.id}" is already the ID of the field "${other.name}"; pick another ID.`,
+          );
+      }
+    });
+  }
+  return out;
+}
+
+// Short words written in capitals in suggested names.
+const ACRONYMS = new Set([
+  'aov',
+  'cpo',
+  'cpc',
+  'cpm',
+  'ctr',
+  'eu',
+  'ga4',
+  'id',
+  'iso',
+  'kpi',
+  'roas',
+  'sek',
+  'eur',
+  'usd',
+  'nok',
+  'dkk',
+  'gbp',
+  'sku',
+  'url',
+  'utm',
+  'vat',
+  'b2b',
+  'gm1',
+  'yoy',
+]);
+
+// A readable display name from a column-style ID: "order_value_ex_vat_sek" → "Order value ex VAT SEK",
+// "ga4_sessions" → "GA4 sessions". Only a suggestion: the caller decides what to apply.
+export function suggestFieldName(id: string): string {
+  const words = id
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.toLowerCase());
+  if (words.length === 0) return id;
+  const shown = words.map((w) => (ACRONYMS.has(w) ? w.toUpperCase() : w === 'pct' ? '%' : w));
+  const first = shown[0]!;
+  shown[0] = first === first.toUpperCase() ? first : first[0]!.toUpperCase() + first.slice(1);
+  return shown.join(' ');
+}

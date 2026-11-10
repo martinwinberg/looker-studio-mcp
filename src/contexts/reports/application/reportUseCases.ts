@@ -51,8 +51,12 @@ import {
   type DataSourceInfo,
   type DataSourceRow,
   type FieldChange,
+  type FieldIdentity,
+  type FieldRename,
+  suggestFieldName,
   validateDataSourceChange,
   validateFieldChange,
+  validateFieldRenames,
 } from '@/contexts/reports/domain/DataSource.js';
 import {
   type CopiedReport,
@@ -607,6 +611,45 @@ export async function updateField(
 ): Promise<DataSourceField> {
   const checked = validateFieldChange(field, change);
   return repo.updateField(parseReportId(report), ref?.trim() || undefined, field.trim(), checked);
+}
+
+export interface FieldIdentityWithSuggestion extends FieldIdentity {
+  // A tidier display name made from the ID, when it differs from the current name.
+  suggestedName?: string;
+}
+
+// Every field of a data source with its display name and field ID, and with `suggest`
+// a tidier display name for fields whose name is still the raw column name.
+export async function listFieldIds(
+  repo: ReportRepository,
+  report: string,
+  opts: { ref?: string; suggest?: boolean } = {},
+): Promise<FieldIdentityWithSuggestion[]> {
+  const fields = await repo.listFieldIds(parseReportId(report), opts.ref?.trim() || undefined);
+  if (!opts.suggest) return fields;
+  return fields.map((f) => {
+    const suggested = suggestFieldName(f.id);
+    return suggested !== f.name && f.name === f.id ? { ...f, suggestedName: suggested } : f;
+  });
+}
+
+// Renames fields (display name and/or field ID) in Resource › Manage field names and IDs.
+// The batch is checked twice: its shape before the browser opens, then against the
+// data source's fields in the same editor visit, so nothing changes on a bad batch.
+export async function renameFields(
+  repo: ReportRepository,
+  report: string,
+  renames: FieldRename[],
+  ref?: string,
+): Promise<FieldIdentity[]> {
+  validateFieldRenames(renames);
+  const id = parseReportId(report);
+  const source = ref?.trim() || undefined;
+  return repo.inOneVisit(id, async () => {
+    const existing = await repo.listFieldIds(id, source);
+    const checked = validateFieldRenames(renames, existing);
+    return repo.renameFields(id, source, checked);
+  });
 }
 
 // ── Batch ──

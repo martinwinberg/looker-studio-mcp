@@ -22,6 +22,8 @@ import type {
   DataSourceInfo,
   DataSourceRow,
   FieldChange,
+  FieldIdentity,
+  FieldRename,
 } from './DataSource.js';
 import type {
   CopiedReport,
@@ -351,6 +353,15 @@ export interface ReportRepository {
     field: string,
     change: FieldChange,
   ): Promise<DataSourceField>;
+  // Every field of one data source with its display name and field ID
+  // (Resource › Manage field names and IDs). `ref` may be omitted with one data source.
+  listFieldIds(reportId: string, ref: string | undefined): Promise<FieldIdentity[]>;
+  // Applies validated renames in that dialog; returns the fields afterwards.
+  renameFields(
+    reportId: string,
+    ref: string | undefined,
+    renames: FieldRename[],
+  ): Promise<FieldIdentity[]>;
 
   // ── Batch ──
   // Runs `work` with every call for `reportId` inside it sharing one editor visit.

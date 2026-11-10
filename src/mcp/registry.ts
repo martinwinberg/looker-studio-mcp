@@ -51,6 +51,8 @@ import { handleCheckReport } from './tools/check-report.tool.js';
 import { handleListDataSources } from './tools/list-data-sources.tool.js';
 import { handleRemoveDataSource } from './tools/remove-data-source.tool.js';
 import { handleUpdateDataSource } from './tools/update-data-source.tool.js';
+import { handleListFieldIds } from './tools/list-field-ids.tool.js';
+import { handleRenameFields } from './tools/rename-fields.tool.js';
 import { handleUpdateField } from './tools/update-field.tool.js';
 import { handleApplyActions } from './tools/apply-actions.tool.js';
 import { BATCHABLE_TOOLS } from './tools/batch-actions.js';
@@ -488,6 +490,24 @@ const TOOLS: ToolDef[] = [
     schema: schemas.updateFieldSchema,
     write: true,
     run: handleUpdateField,
+  },
+  {
+    name: 'list_field_ids',
+    title: 'List field names and IDs',
+    description:
+      'Every field of a data source with its field ID and display name, as Resource › Manage field names and IDs shows them. suggest_names: true also proposes a tidier display name for fields still named like their column (order_value_ex_vat_sek → "Order value ex VAT SEK"); apply them with rename_fields.',
+    schema: schemas.listFieldIdsSchema,
+    write: false,
+    run: handleListFieldIds,
+  },
+  {
+    name: 'rename_fields',
+    title: 'Rename fields and field IDs',
+    description:
+      'Rename the display name and/or the field ID of one or many fields of a data source in Resource › Manage field names and IDs. Fields are found by current name or ID; the whole batch is checked (valid IDs, no duplicate names or IDs) before anything changes. A new field ID can break charts or formulas that use the field: run check_report afterwards.',
+    schema: schemas.renameFieldsSchema,
+    write: true,
+    run: handleRenameFields,
   },
   {
     name: 'apply_actions',

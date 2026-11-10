@@ -41,6 +41,8 @@ import {
   type DataSourceInfo,
   type DataSourceRow,
   type FieldChange,
+  type FieldIdentity,
+  type FieldRename,
   DataSourceInUseError,
   DataSourceNotFoundError,
   chartsUsing,
@@ -133,6 +135,15 @@ import {
   escapeRegExp,
   sectionNamed,
 } from './ui/selectors.js';
+
+// Raised by the field names and IDs steps until they are written against the live dialog.
+export class FieldIdsDialogNotReadyError extends EditorStepError {
+  constructor(reportId: string, ref: string | undefined, renames?: number) {
+    super(
+      `Resource › Manage field names and IDs is not automated yet (report ${reportId}${ref ? `, data source ${ref}` : ''}${renames ? `, ${renames} rename(s)` : ''}): its dialog steps still have to be verified in a live editor. Nothing was changed.`,
+    );
+  }
+}
 
 export interface LookerStudioUiOptions {
   browser: BrowserSession<Page>;
@@ -2702,20 +2713,67 @@ export class LookerStudioUiReportRepository implements ReportRepository {
     return out;
   }
 
+  // The field list is virtual-scrolled: only the rows in view exist in the DOM. Scroll its
+  // container from top to bottom, collecting rows by name, then put the scroll back.
   private readSourceFields(editor: LookerStudioEditor): Promise<DataSourceField[]> {
-    return editor.page.evaluate((sel) => {
+    return editor.page.evaluate(async (sel) => {
       const first = (e: Element | null) =>
         (e as HTMLElement | null)?.innerText.trim().split('\n')[0]?.trim() ?? '';
-      return [...document.querySelectorAll(sel.fieldRow)].map((r) => {
-        const label = r.querySelector(sel.fieldName);
-        return {
-          name: label?.textContent?.trim() ?? '',
-          type: first(r.querySelector(sel.typeColumn)),
-          aggregation: first(r.querySelector(sel.aggregationColumn)),
-          kind: label?.closest('.metric') ? ('metric' as const) : ('dimension' as const),
-        };
-      });
+      const fields = new Map<string, DataSourceField>();
+      const collect = () => {
+        for (const r of document.querySelectorAll(sel.fieldRow)) {
+          const label = r.querySelector(sel.fieldName);
+          const name = label?.textContent?.trim() ?? '';
+          if (!name || fields.has(name)) continue;
+          fields.set(name, {
+            name,
+            type: first(r.querySelector(sel.typeColumn)),
+            aggregation: first(r.querySelector(sel.aggregationColumn)),
+            kind: label?.closest('.metric') ? 'metric' : 'dimension',
+          });
+        }
+      };
+      const pause = () => new Promise((resolve) => setTimeout(resolve, 150));
+      collect();
+      let box = document.querySelector(sel.fieldRow)?.parentElement ?? null;
+      while (
+        box &&
+        !(
+          box.scrollHeight > box.clientHeight + 4 &&
+          /(auto|scroll)/.test(getComputedStyle(box).overflowY)
+        )
+      )
+        box = box.parentElement;
+      if (box) {
+        const start = box.scrollTop;
+        box.scrollTop = 0;
+        await pause();
+        collect();
+        for (let guard = 0; guard < 500; guard++) {
+          const before = box.scrollTop;
+          box.scrollTop = before + Math.max(40, box.clientHeight * 0.8);
+          await pause();
+          collect();
+          if (box.scrollTop === before) break;
+        }
+        box.scrollTop = start;
+      }
+      return [...fields.values()];
     }, DATA_SOURCE);
+  }
+
+  // Resource › Manage field names and IDs. The dialog's steps are written against the live
+  // editor (see AGENTS.md: the UI adapter is verified live); until then these refuse clearly.
+  async listFieldIds(reportId: string, ref: string | undefined): Promise<FieldIdentity[]> {
+    throw new FieldIdsDialogNotReadyError(reportId, ref);
+  }
+
+  async renameFields(
+    reportId: string,
+    ref: string | undefined,
+    renames: FieldRename[],
+  ): Promise<FieldIdentity[]> {
+    throw new FieldIdsDialogNotReadyError(reportId, ref, renames.length);
   }
 
   // The field list can be long: filter it with the editor's search box first.

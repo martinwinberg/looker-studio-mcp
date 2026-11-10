@@ -27,6 +27,8 @@ import {
   removeDataSource,
   updateDataSource,
   updateField,
+  listFieldIds,
+  renameFields,
 } from '@/contexts/reports/application/reportUseCases.js';
 import type { ReportRepository } from '@/contexts/reports/domain/ReportRepository.js';
 import { InvalidChartError, InvalidReportIdError } from '@/contexts/reports/domain/Report.js';
@@ -90,6 +92,12 @@ function fakeRepo(): ReportRepository {
       aggregation: 'Sum',
       kind: 'dimension' as const,
     })),
+    listFieldIds: vi.fn(async () => [
+      { name: 'order_value_ex_vat_sek', id: 'order_value_ex_vat_sek' },
+      { name: 'Orders', id: 'orders' },
+      { name: 'ROAS blended', id: 'calc_roas' },
+    ]),
+    renameFields: vi.fn(async () => []),
     inOneVisit: vi.fn(async (_id: string, work: () => Promise<unknown>) => work()) as never,
     dataSourceNames: vi.fn(async () => []),
     readReport: vi.fn(),
@@ -373,5 +381,56 @@ describe('report use cases', () => {
     await expect(updateField(repo, ID, 'events', {})).rejects.toThrow(InvalidChartError);
     await updateField(repo, ID, 'events', { type: 'Number' }, ' ');
     expect(repo.updateField).toHaveBeenCalledWith(ID, undefined, 'events', { type: 'Number' });
+  });
+});
+
+describe('field names and IDs', () => {
+  it('lists fields and only suggests names for fields still named like their ID', async () => {
+    const fields = await listFieldIds(fakeRepo(), ID, { suggest: true });
+    expect(fields).toEqual([
+      {
+        name: 'order_value_ex_vat_sek',
+        id: 'order_value_ex_vat_sek',
+        suggestedName: 'Order value ex VAT SEK',
+      },
+      { name: 'Orders', id: 'orders' },
+      { name: 'ROAS blended', id: 'calc_roas' },
+    ]);
+    expect(await listFieldIds(fakeRepo(), ID)).not.toContainEqual(
+      expect.objectContaining({ suggestedName: expect.anything() }),
+    );
+  });
+
+  it('checks renames against the data source in one visit before renaming', async () => {
+    const repo = fakeRepo();
+    await renameFields(
+      repo,
+      ID,
+      [
+        { field: 'order_value_ex_vat_sek', name: ' Revenue ex VAT ' },
+        { field: 'calc_roas', id: 'roas_blended' },
+      ],
+      'ds5',
+    );
+    expect(repo.inOneVisit).toHaveBeenCalledTimes(1);
+    expect(repo.listFieldIds).toHaveBeenCalledWith(ID, 'ds5');
+    expect(repo.renameFields).toHaveBeenCalledWith(ID, 'ds5', [
+      { field: 'order_value_ex_vat_sek', name: 'Revenue ex VAT' },
+      { field: 'calc_roas', id: 'roas_blended' },
+    ]);
+  });
+
+  it('changes nothing when a rename collides or the field is missing', async () => {
+    const repo = fakeRepo();
+    await expect(
+      renameFields(repo, ID, [{ field: 'orders', name: 'ROAS blended' }]),
+    ).rejects.toThrow(/already the name/);
+    await expect(renameFields(repo, ID, [{ field: 'nope', name: 'X' }])).rejects.toThrow(
+      /no field/,
+    );
+    await expect(renameFields(repo, ID, [{ field: 'orders', id: '1bad' }])).rejects.toThrow(
+      InvalidChartError,
+    );
+    expect(repo.renameFields).not.toHaveBeenCalled();
   });
 });
