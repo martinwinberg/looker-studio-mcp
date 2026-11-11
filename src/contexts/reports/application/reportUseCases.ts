@@ -613,8 +613,11 @@ export async function updateField(
   return repo.updateField(parseReportId(report), ref?.trim() || undefined, field.trim(), checked);
 }
 
+// order_value_ex_vat_sek, date, ga4_sessions: still named like the column.
+const COLUMN_LIKE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
 export interface FieldIdentityWithSuggestion extends FieldIdentity {
-  // A tidier display name made from the ID, when it differs from the current name.
+  // A tidier display name made from a column-like display name, when it differs.
   suggestedName?: string;
 }
 
@@ -627,9 +630,12 @@ export async function listFieldIds(
 ): Promise<FieldIdentityWithSuggestion[]> {
   const fields = await repo.listFieldIds(parseReportId(report), opts.ref?.trim() || undefined);
   if (!opts.suggest) return fields;
+  // Field IDs are not column names (_market_name_, calc_92t6vhb68d): suggest from the
+  // display name while it still looks like a column.
   return fields.map((f) => {
-    const suggested = suggestFieldName(f.id);
-    return suggested !== f.name && f.name === f.id ? { ...f, suggestedName: suggested } : f;
+    if (!COLUMN_LIKE.test(f.name)) return f;
+    const suggested = suggestFieldName(f.name);
+    return suggested !== f.name ? { ...f, suggestedName: suggested } : f;
   });
 }
 

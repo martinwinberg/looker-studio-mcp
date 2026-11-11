@@ -244,11 +244,54 @@ export function fieldTypePath(type: string): string[] {
 
 // ── Field names and IDs (Resource › Manage field names and IDs) ──
 
-// A field as the Manage field names and IDs dialog lists it: the display name
-// charts show and the field ID formulas and the report refer to.
+const fold = (s: string): string => s.trim().toLowerCase();
+
+// A field of a data source as this report sees it: the display name charts show and the
+// field ID filters and the report refer to. The dialog keeps them as report-level
+// overrides of the data source's own name and ID (originalName, originalId), so the
+// data source itself never changes.
 export interface FieldIdentity {
   name: string;
   id: string;
+  originalName: string;
+  originalId: string;
+  // Data type as the overrides table shows it (Text, Number…), for overridden fields.
+  type?: string;
+}
+
+export const isOverridden = (f: FieldIdentity): boolean =>
+  f.name !== f.originalName || f.id !== f.originalId;
+
+// Builds the report's view of the fields: each field's own name and ID, with any
+// override from the Field overrides table on top (blank cells keep the original).
+export function applyFieldOverrides(
+  fields: { originalName: string; originalId: string }[],
+  overrides: { displayName: string; idOverride: string; originalId: string; dataType?: string }[],
+): FieldIdentity[] {
+  return fields.map((f) => {
+    const o = overrides.find((x) => x.originalId === f.originalId);
+    return {
+      name: o?.displayName.trim() || f.originalName,
+      id: o?.idOverride.trim() || f.originalId,
+      originalName: f.originalName,
+      originalId: f.originalId,
+      ...(o?.dataType ? { type: o.dataType } : {}),
+    };
+  });
+}
+
+// The field a rename means: by current name, current ID, then the data source's own
+// name or ID; exact first, then ignoring case.
+export function findFieldIdentity(
+  fields: FieldIdentity[],
+  wanted: string,
+): FieldIdentity | undefined {
+  const keys = (f: FieldIdentity) => [f.name, f.id, f.originalName, f.originalId];
+  for (const k of [0, 1, 2, 3]) {
+    const hit = fields.find((f) => keys(f)[k] === wanted);
+    if (hit) return hit;
+  }
+  return fields.find((f) => keys(f).some((v) => fold(v) === fold(wanted)));
 }
 
 // One change of a field, found by its current name or ID.
@@ -260,8 +303,6 @@ export interface FieldRename {
 
 // Looker Studio field IDs: letters, digits and underscores, not starting with a digit.
 export const FIELD_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-const fold = (s: string): string => s.trim().toLowerCase();
 
 // Checks a batch of renames before any browser work: every change names a field and
 // a new name or ID, IDs are well formed, and no two fields end up with the same name or ID.
@@ -313,15 +354,19 @@ export function validateFieldRenames(
 
   if (existing) {
     const targets = out.map((r) => {
-      const hit =
-        existing.find((f) => f.name === r.field) ??
-        existing.find((f) => f.id === r.field) ??
-        existing.find((f) => fold(f.name) === fold(r.field) || fold(f.id) === fold(r.field));
+      const hit = findFieldIdentity(existing, r.field);
       if (!hit)
         throw new InvalidChartError(
           `There is no field "${r.field}" (by name or ID) in the data source.`,
         );
       return hit;
+    });
+    targets.forEach((t, i) => {
+      const j = targets.indexOf(t);
+      if (j !== i)
+        throw new InvalidChartError(
+          `"${out[j]!.field}" and "${out[i]!.field}" are the same field (${t.originalId}); merge the changes.`,
+        );
     });
     // Names and IDs after the renames, for the fields that are not changed.
     const kept = existing.filter((f) => !targets.includes(f));

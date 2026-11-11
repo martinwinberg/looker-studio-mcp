@@ -47,7 +47,9 @@ import {
   DataSourceNotFoundError,
   chartsUsing,
   fieldTypePath,
+  applyFieldOverrides,
   findDataSource,
+  findFieldIdentity,
   isUsed,
   parseConnectionChanges,
   parseConsoleLink,
@@ -133,17 +135,9 @@ import {
   conditionAlias,
   cssEscape,
   escapeRegExp,
+  FIELD_OVERRIDES,
   sectionNamed,
 } from './ui/selectors.js';
-
-// Raised by the field names and IDs steps until they are written against the live dialog.
-export class FieldIdsDialogNotReadyError extends EditorStepError {
-  constructor(reportId: string, ref: string | undefined, renames?: number) {
-    super(
-      `Resource › Manage field names and IDs is not automated yet (report ${reportId}${ref ? `, data source ${ref}` : ''}${renames ? `, ${renames} rename(s)` : ''}): its dialog steps still have to be verified in a live editor. Nothing was changed.`,
-    );
-  }
-}
 
 export interface LookerStudioUiOptions {
   browser: BrowserSession<Page>;
@@ -2762,10 +2756,20 @@ export class LookerStudioUiReportRepository implements ReportRepository {
     }, DATA_SOURCE);
   }
 
-  // Resource › Manage field names and IDs. The dialog's steps are written against the live
-  // editor (see AGENTS.md: the UI adapter is verified live); until then these refuse clearly.
+  // ── Resource › Manage field names and IDs ──
+  // It opens the report's Field overrides panel, which lists only the overrides. A field's
+  // own name and ID show only once it is picked in the Edit field name and ID dialog, so
+  // listing walks the dialog's field picker field by field and cancels; renaming saves an
+  // override per field (a new one, or the row's Edit). Overrides are kept in the report.
+
+  // Fields read in this editor visit, so rename_fields does not walk the picker twice.
+  private readonly fieldIdsSeen = new WeakMap<
+    object,
+    Map<string, { source: string; fields: FieldIdentity[] }>
+  >();
+
   async listFieldIds(reportId: string, ref: string | undefined): Promise<FieldIdentity[]> {
-    throw new FieldIdsDialogNotReadyError(reportId, ref);
+    return this.edit(reportId, async (editor) => (await this.readFieldIds(editor, ref)).fields);
   }
 
   async renameFields(
@@ -2773,7 +2777,363 @@ export class LookerStudioUiReportRepository implements ReportRepository {
     ref: string | undefined,
     renames: FieldRename[],
   ): Promise<FieldIdentity[]> {
-    throw new FieldIdsDialogNotReadyError(reportId, ref, renames.length);
+    return this.edit(reportId, async (editor) => {
+      const { source, fields } = await this.readFieldIds(editor, ref);
+      const targets = renames.map((r) => {
+        const hit = findFieldIdentity(fields, r.field);
+        if (!hit) throw new EditorStepError(`there is no field "${r.field}" in ${source}`);
+        return hit;
+      });
+      await this.openFieldOverrides(editor);
+      for (const [i, r] of renames.entries()) {
+        const field = targets[i]!;
+        const what = [
+          ...(r.name !== undefined ? [`name "${r.name}"`] : []),
+          ...(r.id !== undefined ? [`ID ${r.id}`] : []),
+        ].join(' and ');
+        await editor.step(`override ${field.originalName} (${field.originalId}) with ${what}`, () =>
+          this.saveFieldOverride(editor, source, field, r),
+        );
+      }
+      const overrides = await this.readFieldOverrides(editor, source);
+      await this.closeFieldOverrides(editor);
+      const after = applyFieldOverrides(fields, overrides);
+      // Check every change against the table, not against what was typed.
+      renames.forEach((r, i) => {
+        const now = after.find((f) => f.originalId === targets[i]!.originalId)!;
+        const wrong = [
+          r.name !== undefined && now.name !== r.name ? `name is "${now.name}"` : '',
+          r.id !== undefined && now.id !== r.id ? `ID is ${now.id}` : '',
+        ].filter(Boolean);
+        if (wrong.length)
+          throw new EditorStepError(
+            `the override of ${targets[i]!.originalName} did not take: its ${wrong.join(' and ')}`,
+          );
+      });
+      this.rememberFieldIds(editor, ref, source, after);
+      return after;
+    });
+  }
+
+  private rememberFieldIds(
+    editor: LookerStudioEditor,
+    ref: string | undefined,
+    source: string,
+    fields: FieldIdentity[],
+  ): void {
+    const seen = this.fieldIdsSeen.get(editor) ?? new Map();
+    seen.set(ref ?? '', { source, fields });
+    this.fieldIdsSeen.set(editor, seen);
+  }
+
+  private async readFieldIds(
+    editor: LookerStudioEditor,
+    ref: string | undefined,
+  ): Promise<{ source: string; fields: FieldIdentity[] }> {
+    const known = this.fieldIdsSeen.get(editor)?.get(ref ?? '');
+    if (known) return known;
+    const source = await this.fieldOverrideSourceName(editor, ref);
+    await this.openFieldOverrides(editor);
+    const overrides = await this.readFieldOverrides(editor, source);
+    const own: { originalName: string; originalId: string }[] = [];
+    await this.openOverrideDialog(editor, source);
+    try {
+      const labels = await this.pickerFieldNames(editor);
+      for (const label of labels) {
+        const picked = await this.pickOverrideField(editor, [label]);
+        if (!own.some((f) => f.originalId === picked.originalId)) own.push(picked);
+      }
+    } finally {
+      await this.cancelOverrideDialog(editor);
+    }
+    await this.closeFieldOverrides(editor);
+    // The picker leaves out fields that already have an override: the table names them.
+    for (const o of overrides)
+      if (!own.some((f) => f.originalId === o.originalId))
+        own.push({ originalName: o.originalName, originalId: o.originalId });
+    const fields = applyFieldOverrides(own, overrides);
+    this.rememberFieldIds(editor, ref, source, fields);
+    return { source, fields };
+  }
+
+  // The dialog's data source list names sources as Manage added data sources does.
+  private async fieldOverrideSourceName(
+    editor: LookerStudioEditor,
+    ref: string | undefined,
+  ): Promise<string> {
+    await this.openSourcesPanel(editor);
+    const rows = await this.readSourceRows(editor);
+    await this.closeSourcesPanel(editor);
+    if (!ref && rows.length !== 1)
+      throw new DataSourceNotFoundError(
+        `The report has several data sources; pass data_source: ${rows.map((r) => `${r.name} (${r.alias})`).join(', ')}.`,
+      );
+    return (ref ? findDataSource(rows, ref) : rows[0]!).name;
+  }
+
+  private async openFieldOverrides(editor: LookerStudioEditor): Promise<void> {
+    await editor.declineConsent(1_500);
+    await editor.clickMenu('Resource', [FIELD_OVERRIDES.menuItem]);
+    await editor.step('open the Field overrides panel', () =>
+      editor.page
+        .getByRole('button', { name: FIELD_OVERRIDES.addButton })
+        .waitFor({ timeout: this.opts.stepTimeoutMs }),
+    );
+    await editor.settle(500);
+  }
+
+  private async closeFieldOverrides(editor: LookerStudioEditor): Promise<void> {
+    const close = editor.page.getByRole('button', { name: FIELD_OVERRIDES.closeButton }).first();
+    if (await close.isVisible().catch(() => false)) await close.click();
+    await editor.settle(800);
+  }
+
+  // Rows of the Field overrides table for one data source.
+  private async readFieldOverrides(
+    editor: LookerStudioEditor,
+    source: string,
+  ): Promise<
+    {
+      displayName: string;
+      originalName: string;
+      dataSource: string;
+      idOverride: string;
+      originalId: string;
+      dataType: string;
+    }[]
+  > {
+    const rows = await editor.page.evaluate((sel) => {
+      const text = (r: Element, s: string) =>
+        r.querySelector(s)?.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+      return [...document.querySelectorAll(sel.row)].map((r) => ({
+        displayName: text(r, sel.cell.displayName),
+        originalName: text(r, sel.cell.originalName),
+        dataSource: text(r, sel.cell.dataSource),
+        idOverride: text(r, sel.cell.idOverride),
+        originalId: text(r, sel.cell.originalId),
+        dataType: text(r, sel.cell.dataType),
+      }));
+    }, FIELD_OVERRIDES);
+    return rows.filter((r) => r.dataSource === source);
+  }
+
+  private overrideDialog(editor: LookerStudioEditor): Locator {
+    return editor.page.locator(FIELD_OVERRIDES.dialog);
+  }
+
+  // Add field override, then choose the data source.
+  private async openOverrideDialog(editor: LookerStudioEditor, source: string): Promise<void> {
+    const page = editor.page;
+    const dialog = this.overrideDialog(editor);
+    await editor.step('open Add field override', async () => {
+      await page.getByRole('button', { name: FIELD_OVERRIDES.addButton }).click();
+      await dialog.waitFor({ timeout: this.opts.stepTimeoutMs });
+    });
+    await editor.step(`choose the data source ${source}`, async () => {
+      await dialog.locator(FIELD_OVERRIDES.dataSourceButton).click();
+      const options = page.locator(FIELD_OVERRIDES.dataSourceOption);
+      await options.first().waitFor({ timeout: this.opts.stepTimeoutMs });
+      // Names carry a date like "11/10/26, 2:53\u202fPM": compare with spaces collapsed,
+      // as the Data sources panel was read.
+      const names = await options.evaluateAll((els) =>
+        els.map((e) => e.textContent?.trim().replace(/\s+/g, ' ') ?? ''),
+      );
+      const index = names.indexOf(source);
+      if (index < 0)
+        throw new Error(`the list has no data source ${source} (it has ${names.join('; ')})`);
+      await options.nth(index).click();
+      await dialog
+        .getByRole('button', { name: FIELD_OVERRIDES.chooseField })
+        .waitFor({ timeout: this.opts.stepTimeoutMs });
+      await editor.settle(800);
+    });
+  }
+
+  private async cancelOverrideDialog(editor: LookerStudioEditor): Promise<void> {
+    const page = editor.page;
+    if (
+      await page
+        .locator(FIELD_OVERRIDES.picker)
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await page.keyboard.press('Escape');
+      await editor.settle(400);
+    }
+    const dialog = this.overrideDialog(editor);
+    if (await dialog.isVisible().catch(() => false)) {
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden', timeout: this.opts.stepTimeoutMs });
+    }
+    await editor.settle(400);
+  }
+
+  // Opens the field picker: "Choose a field", or the chip of the field already chosen.
+  private async openFieldPicker(editor: LookerStudioEditor): Promise<Locator> {
+    const page = editor.page;
+    const picker = page.locator(FIELD_OVERRIDES.picker);
+    if (await picker.isVisible().catch(() => false)) return picker;
+    const dialog = this.overrideDialog(editor);
+    const chosen = dialog.locator(FIELD_OVERRIDES.chosenField).first();
+    if (await chosen.isVisible().catch(() => false)) await chosen.click();
+    else await dialog.getByRole('button', { name: FIELD_OVERRIDES.chooseField }).click();
+    await picker.waitFor({ timeout: this.opts.stepTimeoutMs });
+    await editor.settle(600);
+    return picker;
+  }
+
+  // Every field the picker offers, in its order (not those with an override already).
+  // Its list is virtual-scrolled: scroll it from top to bottom and collect the chips.
+  private async pickerFieldNames(editor: LookerStudioEditor): Promise<string[]> {
+    return editor.step('list the fields of the data source', async () => {
+      const picker = await this.openFieldPicker(editor);
+      await picker.locator(FIELD_OVERRIDES.pickerSearch).fill('');
+      await editor.settle(500);
+      const names = await picker.evaluate(async (root, sel) => {
+        const seen: string[] = [];
+        const collect = () => {
+          for (const c of root.querySelectorAll(sel.pickerChipName)) {
+            const name = c.textContent?.trim() ?? '';
+            if (name && !seen.includes(name)) seen.push(name);
+          }
+        };
+        const pause = () => new Promise((resolve) => setTimeout(resolve, 150));
+        const box = root.querySelector(sel.pickerViewport);
+        collect();
+        if (box) {
+          box.scrollTop = 0;
+          await pause();
+          collect();
+          for (let guard = 0; guard < 1000; guard++) {
+            const before = box.scrollTop;
+            box.scrollTop = before + Math.max(40, box.clientHeight * 0.8);
+            await pause();
+            collect();
+            if (box.scrollTop === before) break;
+          }
+        }
+        return seen;
+      }, FIELD_OVERRIDES);
+      await editor.page.keyboard.press('Escape');
+      await editor.settle(400);
+      if (names.length === 0) throw new Error('the field picker lists no fields');
+      return names;
+    });
+  }
+
+  // Picks the first of `labels` the picker offers (by search) and reads the field's own
+  // name and ID from the dialog's "Original name:" and "Original ID:" lines.
+  private async pickOverrideField(
+    editor: LookerStudioEditor,
+    labels: string[],
+  ): Promise<{ originalName: string; originalId: string }> {
+    const dialog = this.overrideDialog(editor);
+    const read = async () => {
+      const lines = await dialog.locator(FIELD_OVERRIDES.originalLabel).allInnerTexts();
+      const value = (key: RegExp) =>
+        lines
+          .find((l) => key.test(l))
+          ?.replace(key, '')
+          .trim() ?? '';
+      return { originalName: value(/^\s*Original name:/i), originalId: value(/^\s*Original ID:/i) };
+    };
+    return editor.step(`pick the field ${labels[0]}`, async () => {
+      const before = await read();
+      const picker = await this.openFieldPicker(editor);
+      let chip: Locator | null = null;
+      for (const label of labels) {
+        await picker.locator(FIELD_OVERRIDES.pickerSearch).fill(label);
+        await editor.settle(400);
+        const hit = picker
+          .locator(FIELD_OVERRIDES.pickerChipName, {
+            hasText: new RegExp(`^\\s*${escapeRegExp(label)}\\s*$`),
+          })
+          .first();
+        if (await hit.isVisible().catch(() => false)) {
+          chip = hit;
+          break;
+        }
+      }
+      if (!chip) {
+        await editor.page.keyboard.press('Escape');
+        throw new Error(`the field picker has no field named ${labels.join(' or ')}`);
+      }
+      await chip.click();
+      // The Original lines change once the dialog has the field.
+      for (let i = 0; i < 40; i++) {
+        await editor.settle(150);
+        const now = await read();
+        if (now.originalId && now.originalId !== before.originalId) return now;
+        if (now.originalId && labels.includes(now.originalName)) return now;
+      }
+      const now = await read();
+      if (!now.originalId) throw new Error('the dialog shows no Original ID for the field');
+      return now;
+    });
+  }
+
+  // One override: the row's Edit when the field has one, else Add field override.
+  // Fields left out of `change` keep what they show.
+  private async saveFieldOverride(
+    editor: LookerStudioEditor,
+    source: string,
+    field: FieldIdentity,
+    change: FieldRename,
+  ): Promise<void> {
+    const page = editor.page;
+    const dialog = this.overrideDialog(editor);
+    const rowIndex = (
+      await page.evaluate((sel) => {
+        const text = (r: Element, s: string) => r.querySelector(s)?.textContent?.trim() ?? '';
+        return [...document.querySelectorAll(sel.row)].map((r) => ({
+          source: text(r, sel.cell.dataSource).replace(/\s+/g, ' '),
+          id: text(r, sel.cell.originalId),
+        }));
+      }, FIELD_OVERRIDES)
+    ).findIndex((r) => r.source === source && r.id === field.originalId);
+    if (rowIndex >= 0) {
+      await page
+        .locator(FIELD_OVERRIDES.row)
+        .nth(rowIndex)
+        .getByRole('button', { name: FIELD_OVERRIDES.editRow })
+        .click();
+      await dialog.waitFor({ timeout: this.opts.stepTimeoutMs });
+      await editor.settle(800);
+    } else {
+      await this.openOverrideDialog(editor, source);
+      const picked = await this.pickOverrideField(editor, [field.originalName, field.name]);
+      if (picked.originalId !== field.originalId) {
+        await this.cancelOverrideDialog(editor);
+        throw new Error(
+          `picking ${field.originalName} gave the field ${picked.originalId}, not ${field.originalId}`,
+        );
+      }
+    }
+    try {
+      if (change.name !== undefined)
+        await dialog
+          .getByLabel(FIELD_OVERRIDES.displayNameInput, { exact: true })
+          .fill(change.name);
+      if (change.id !== undefined)
+        await dialog.getByLabel(FIELD_OVERRIDES.idInput, { exact: true }).fill(change.id);
+      await editor.settle(400);
+      const save = dialog.getByRole('button', { name: 'Save', exact: true });
+      if (!(await save.isEnabled()))
+        throw new Error(
+          `Save is disabled: ${(await dialog.innerText()).replace(/\s+/g, ' ').slice(-300)}`,
+        );
+      await save.click();
+      await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(async () => {
+        const said = (await dialog.locator('mat-error, .mat-mdc-form-field-error').allInnerTexts())
+          .join(' ')
+          .trim();
+        throw new Error(`the dialog did not accept the override${said ? `: ${said}` : ''}`);
+      });
+      await editor.settle(1200);
+    } catch (err) {
+      await this.cancelOverrideDialog(editor).catch(() => undefined);
+      throw err;
+    }
   }
 
   // The field list can be long: filter it with the editor's search box first.

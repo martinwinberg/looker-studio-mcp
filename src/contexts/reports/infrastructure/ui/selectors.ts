@@ -514,6 +514,44 @@ export const DATA_SOURCE = {
   selectedOption: 'ng2-config-column-item:has(.list-option.selected) a[href]',
 } as const;
 
+// Resource › Manage field names and IDs opens the report's "Field overrides" panel: a
+// table of overrides only (not every field). "Add field override" and a row's Edit open
+// the "Edit field name and ID" mat-dialog. Overrides belong to the report, not the data source.
+export const FIELD_OVERRIDES = {
+  menuItem: 'Manage field names and IDs',
+  addButton: /^\s*Add field override\s*$/,
+  // The panel's own close button (top right, "CLOSE").
+  closeButton: /^\s*close\s*$/i,
+  row: 'tbody tr.mat-mdc-row',
+  // Cells by column; ID Override is blank when only the name is overridden.
+  cell: {
+    displayName: 'td.mat-column-displayName',
+    originalName: 'td.mat-column-originalName',
+    dataSource: 'td.mat-column-datasource',
+    idOverride: 'td.mat-column-idOverride',
+    originalId: 'td.mat-column-originalId',
+    dataType: 'td.mat-column-dataType',
+  },
+  editRow: 'Edit field override',
+  // The Edit field name and ID dialog.
+  dialog: 'field-overrides-dialog-content',
+  dataSourceButton: 'button.datasource-selector-button',
+  // Its dropdown: one option per added data source, named like "name - 11/10/26, 2:53 PM".
+  dataSourceOption: '.datasource-option',
+  chooseField: /Choose a field/i,
+  // The picked field, as a chip; clicking it opens the field picker again.
+  chosenField: '.field-selector-container ng2-concept-chip .display-name',
+  displayNameInput: 'Display name',
+  idInput: 'ID override',
+  // "Original name: market_name" and "Original ID: _market_name_", once a field is picked.
+  originalLabel: 'p.original-label',
+  // The field picker: a search box over a virtual-scrolled list of field chips.
+  picker: 'ng2-selector-dialog',
+  pickerSearch: 'input[type=search]',
+  pickerViewport: 'cdk-virtual-scroll-viewport',
+  pickerChipName: 'ng2-concept-chip .display-name',
+} as const;
+
 export const FRESHNESS_LABEL: Record<Freshness, string> = {
   '15 minutes': 'Every 15 minutes',
   '1 hour': 'Every hour',

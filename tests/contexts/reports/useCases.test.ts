@@ -37,6 +37,23 @@ const ID = '1a2b3c4d-0000-4000-8000-1234567890ab';
 
 const placed = { index: 0, kind: 'Text properties', layout: { x: 0, y: 0, width: 10, height: 10 } };
 
+// Fields as list_field_ids reads them: IDs are not column names.
+const FIELDS = {
+  revenue: {
+    name: 'order_value_ex_vat_sek',
+    id: '_order_value_ex_vat_sek_',
+    originalName: 'order_value_ex_vat_sek',
+    originalId: '_order_value_ex_vat_sek_',
+  },
+  orders: { name: 'Orders', id: '_orders_', originalName: 'orders', originalId: '_orders_' },
+  roas: {
+    name: 'ROAS blended',
+    id: 'calc_roas',
+    originalName: 'ROAS blended',
+    originalId: 'calc_roas',
+  },
+};
+
 function fakeRepo(): ReportRepository {
   return {
     listReports: vi.fn(async () => [
@@ -92,11 +109,7 @@ function fakeRepo(): ReportRepository {
       aggregation: 'Sum',
       kind: 'dimension' as const,
     })),
-    listFieldIds: vi.fn(async () => [
-      { name: 'order_value_ex_vat_sek', id: 'order_value_ex_vat_sek' },
-      { name: 'Orders', id: 'orders' },
-      { name: 'ROAS blended', id: 'calc_roas' },
-    ]),
+    listFieldIds: vi.fn(async () => [FIELDS.revenue, FIELDS.orders, FIELDS.roas]),
     renameFields: vi.fn(async () => []),
     inOneVisit: vi.fn(async (_id: string, work: () => Promise<unknown>) => work()) as never,
     dataSourceNames: vi.fn(async () => []),
@@ -385,16 +398,27 @@ describe('report use cases', () => {
 });
 
 describe('field names and IDs', () => {
-  it('lists fields and only suggests names for fields still named like their ID', async () => {
+  it('does not suggest a name for a field already named by hand', async () => {
+    const repo = fakeRepo();
+    repo.listFieldIds.mockResolvedValueOnce([
+      {
+        name: 'ISO week',
+        id: 'calc_92t6vhb68d',
+        originalName: 'ISO week',
+        originalId: 'calc_92t6vhb68d',
+      },
+    ]);
+    expect((await listFieldIds(repo, ID, { suggest: true }))[0]).not.toHaveProperty(
+      'suggestedName',
+    );
+  });
+
+  it('lists fields and only suggests names for fields still named like a column', async () => {
     const fields = await listFieldIds(fakeRepo(), ID, { suggest: true });
     expect(fields).toEqual([
-      {
-        name: 'order_value_ex_vat_sek',
-        id: 'order_value_ex_vat_sek',
-        suggestedName: 'Order value ex VAT SEK',
-      },
-      { name: 'Orders', id: 'orders' },
-      { name: 'ROAS blended', id: 'calc_roas' },
+      { ...FIELDS.revenue, suggestedName: 'Order value ex VAT SEK' },
+      FIELDS.orders,
+      FIELDS.roas,
     ]);
     expect(await listFieldIds(fakeRepo(), ID)).not.toContainEqual(
       expect.objectContaining({ suggestedName: expect.anything() }),

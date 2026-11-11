@@ -1,18 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyFieldOverrides,
+  chartsUsing,
   DataSourceInUseError,
   DataSourceNotFoundError,
-  chartsUsing,
   fieldTypePath,
   findDataSource,
+  findFieldIdentity,
+  isOverridden,
   isUsed,
   parseConnectionChanges,
   parseConsoleLink,
   parseFreshness,
+  suggestFieldName,
   validateDataSourceChange,
   validateFieldChange,
-  suggestFieldName,
   validateFieldRenames,
 } from '@/contexts/reports/domain/DataSource.js';
 import { InvalidChartError } from '@/contexts/reports/domain/Report.js';
@@ -128,11 +131,59 @@ describe('data sources', () => {
 });
 
 describe('field names and IDs', () => {
+  const field = (name: string, id: string, originalName = name, originalId = id) => ({
+    name,
+    id,
+    originalName,
+    originalId,
+  });
   const existing = [
-    { name: 'Revenue', id: 'order_value_ex_vat_sek' },
-    { name: 'orders', id: 'orders' },
-    { name: 'Spend', id: 'ad_spend_sek' },
+    field(
+      'Revenue',
+      'order_value_ex_vat_sek',
+      'order_value_ex_vat_sek',
+      '_order_value_ex_vat_sek_',
+    ),
+    field('orders', 'orders'),
+    field('Spend', 'ad_spend_sek'),
   ];
+
+  it('puts report-level overrides on top of the fields; blank cells keep the original', () => {
+    const own = [
+      { originalName: 'market_name', originalId: '_market_name_' },
+      { originalName: 'orders', originalId: '_orders_' },
+      { originalName: 'ISO week', originalId: 'calc_92t6vhb68d' },
+    ];
+    const fields = applyFieldOverrides(own, [
+      { displayName: 'Market name', idOverride: '', originalId: '_market_name_', dataType: 'Text' },
+      { displayName: '', idOverride: 'iso_week', originalId: 'calc_92t6vhb68d' },
+    ]);
+    expect(fields).toEqual([
+      { ...field('Market name', '_market_name_', 'market_name', '_market_name_'), type: 'Text' },
+      field('orders', '_orders_'),
+      field('ISO week', 'iso_week', 'ISO week', 'calc_92t6vhb68d'),
+    ]);
+    expect(fields.map(isOverridden)).toEqual([true, false, true]);
+  });
+
+  it('finds a field by current or original name or ID, exact before case-folded', () => {
+    expect(findFieldIdentity(existing, '_order_value_ex_vat_sek_')?.name).toBe('Revenue');
+    expect(findFieldIdentity(existing, 'order_value_ex_vat_sek')?.name).toBe('Revenue');
+    expect(findFieldIdentity(existing, 'SPEND')?.id).toBe('ad_spend_sek');
+    expect(findFieldIdentity(existing, 'nope')).toBeUndefined();
+  });
+
+  it('refuses two renames that point at the same field', () => {
+    expect(() =>
+      validateFieldRenames(
+        [
+          { field: 'Revenue', name: 'A' },
+          { field: '_order_value_ex_vat_sek_', id: 'b' },
+        ],
+        existing,
+      ),
+    ).toThrow(/are the same field/);
+  });
 
   it('trims and accepts a name, an ID or both', () => {
     expect(

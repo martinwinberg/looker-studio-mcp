@@ -495,7 +495,7 @@ const TOOLS: ToolDef[] = [
     name: 'list_field_ids',
     title: 'List field names and IDs',
     description:
-      'Every field of a data source with its field ID and display name, as Resource › Manage field names and IDs shows them. suggest_names: true also proposes a tidier display name for fields still named like their column (order_value_ex_vat_sek → "Order value ex VAT SEK"); apply them with rename_fields.',
+      'Every field of a data source with the display name and field ID this report uses, and any report-level override of them (Resource › Manage field names and IDs). Reads each field in the dialog: about 1.5 s per field. suggest_names: true also proposes a tidier display name for fields still named like their column (order_value_ex_vat_sek → "Order value ex VAT SEK"); apply them with rename_fields.',
     schema: schemas.listFieldIdsSchema,
     write: false,
     run: handleListFieldIds,
@@ -504,7 +504,7 @@ const TOOLS: ToolDef[] = [
     name: 'rename_fields',
     title: 'Rename fields and field IDs',
     description:
-      'Rename the display name and/or the field ID of one or many fields of a data source in Resource › Manage field names and IDs. Fields are found by current name or ID; the whole batch is checked (valid IDs, no duplicate names or IDs) before anything changes. A new field ID can break charts or formulas that use the field: run check_report afterwards.',
+      'Rename the display name and/or the field ID of one or many fields of a data source, as report-level overrides in Resource › Manage field names and IDs (the data source itself is not changed). Fields are found by current or original name or ID; the whole batch is checked (valid IDs, no duplicate names or IDs) before anything changes. Run check_report afterwards: a new field ID can break charts or formulas that use the field, and an override (even of a display name) has been seen to make other charts of the same data source fail with System Error until it is removed.',
     schema: schemas.renameFieldsSchema,
     write: true,
     run: handleRenameFields,

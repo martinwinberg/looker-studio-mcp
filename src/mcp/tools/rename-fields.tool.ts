@@ -1,5 +1,5 @@
 import { renameFields } from '@/contexts/reports/application/reportUseCases.js';
-import type { FieldRename } from '@/contexts/reports/domain/DataSource.js';
+import { type FieldRename, isOverridden } from '@/contexts/reports/domain/DataSource.js';
 import { renameFieldsSchema } from '@/mcp/schemas.js';
 import { runWrite, text, type ToolResult, type WriteDeps } from '@/mcp/tool-helpers.js';
 
@@ -35,7 +35,7 @@ export async function handleRenameFields(
         return `- ${r.field} → ${parts.join(', ')}`;
       });
       return text(
-        `Renamed ${renames.length} field${renames.length === 1 ? '' : 's'}:\n${changed.join('\n')}\n\nThe data source now has ${after.length} fields. A new field ID can break charts, filters or formulas that use the field: run check_report.`,
+        `Renamed ${renames.length} field${renames.length === 1 ? '' : 's'}:\n${changed.join('\n')}\n\nThese are report-level overrides (Resource › Manage field names and IDs); the data source itself is unchanged. ${after.filter(isOverridden).length} of its ${after.length} fields are overridden in this report. Run check_report now: a new field ID can break charts, filters or formulas that use the field, and in a live test even a display-name override made other charts of the same data source fail with "System Error". Removing the override (Resource › Manage field names and IDs › Remove) restores them.`,
       );
     },
   );
